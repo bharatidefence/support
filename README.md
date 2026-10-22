@@ -33,47 +33,144 @@ Assumptions marked "assumed" should be validated before implementation starts.
 
 ---
 
-## 3. Application Landscape
+## 3. System Architecture
 
 ```mermaid
 graph TD
-    subgraph Users
-        EU[Customer End User]
-        OA[Customer Org Admin]
-        AG[Support Agent]
-        AD[Internal Admin]
+    %% Users & Entry Points
+    subgraph Clients [Client Layer]
+        Customer[Customer End User]
+        OrgAdmin[Customer Org Admin]
+        Agent[Support Agent]
+        Admin[Internal Admin]
+        HostSite["Customer's Own Website"]
     end
 
-    subgraph ClientApps[Client Applications]
-        PORTAL[Customer Portal<br/>Next.js: SSG/SSR + SPA]
-        WIDGET[Embeddable Widget<br/>Preact/Web Component]
-        DESK[Agent Desk<br/>React SPA]
-        ADMIN[Admin Console<br/>React SPA]
+    %% Network & Security Layer
+    subgraph Edge [Edge & Security Layer]
+        DNS[Route 53 / DNS<br/>Tenant Subdomain / Custom Domain] --> WAF[Web Application Firewall]
+        WAF --> CDN[Content Delivery Network / CloudFront]
+        CDN --> ALB[Application Load Balancer]
     end
 
-    subgraph Shared[Shared Packages]
-        UI[ui: design system]
-        API[api-client: typed SDK]
-        RT[realtime: socket client]
-        AUTH[auth]
-        I18N[i18n]
-        OBS[observability]
+    %% Routing
+    Customer --> DNS
+    OrgAdmin --> DNS
+    Agent --> DNS
+    Admin --> DNS
+    HostSite -->|Loads widget loader.js| DNS
+
+    %% Frontend Applications
+    subgraph Frontend [Client Applications - Monorepo Apps]
+        Portal["Customer Portal - Next.js<br/>Help Center SSG/ISR, Tickets, Org Settings"]
+        Widget["Embeddable Widget - Preact in iframe<br/>KB Deflection, Live Chat, Ticket Form"]
+        Desk["Agent Desk - React SPA<br/>Queue, Ticket Workspace, Chat Panel, Create Ticket from Chat"]
+        AdminApp["Admin Console - React SPA<br/>Tenants, SLA, Routing, Forms, Email Templates, Audit"]
     end
 
-    EU --> PORTAL
-    EU --> WIDGET
-    OA --> PORTAL
-    AG --> DESK
-    AD --> ADMIN
+    CDN -->|Serve static bundles| Portal
+    CDN -->|Serve static bundles| Widget
+    CDN -->|Serve static bundles| Desk
+    CDN -->|Serve static bundles| AdminApp
 
-    PORTAL --> Shared
-    WIDGET --> API
-    WIDGET --> RT
-    WIDGET --> I18N
-    DESK --> Shared
-    ADMIN --> Shared
+    %% Shared Packages
+    subgraph SharedPkgs [Shared Client Packages]
+        UIKit[ui - Design System and Tokens]
+        TenantPkg[tenant - Resolution, Theming, Entitlements]
+        AuthPkg[auth - OIDC PKCE, Guards, Permissions]
+        ApiClient[api-client - Typed SDK from OpenAPI]
+        RealtimeClient[realtime - Socket Manager, Outbox, SSE Fallback]
+        I18n[i18n - ICU Messages, RTL]
+        Obs[observability - Errors, Web Vitals, Trace IDs]
+        Flags[feature flags client]
+    end
 
-    Shared --> BFF[API Gateway / BFF + WebSocket Gateway]
+    Portal --> SharedPkgs
+    Widget --> SharedPkgs
+    Desk --> SharedPkgs
+    AdminApp --> SharedPkgs
+
+    %% Client State & Storage
+    subgraph ClientState [Client State & Storage]
+        QueryCache[TanStack Query Cache<br/>Tenant and Org Scoped Keys]
+        UIState[UI State<br/>Zustand + URL Params]
+        IDB[(IndexedDB<br/>Drafts, Chat Outbox)]
+        TokenMem[In-Memory Access Token]
+    end
+
+    ApiClient --> QueryCache
+    RealtimeClient -->|Patch or invalidate| QueryCache
+    RealtimeClient --> IDB
+    AuthPkg --> TokenMem
+    SharedPkgs --> UIState
+
+    %% API Gateway Tier
+    subgraph API_Gateway_Layer [API Gateway Tier]
+        APIGW[API Gateway / BFF<br/>Cookies, Token Refresh, Rate Limiting]
+        WSGW[WebSocket Gateway<br/>WSS with SSE / Long-poll Fallback]
+    end
+
+    ApiClient -.->|HTTPS REST via Edge| ALB
+    RealtimeClient -.->|WSS / SSE via Edge| ALB
+    ALB -->|API Traffic| APIGW
+    ALB -->|Realtime Traffic| WSGW
+
+    %% Application Services Tier
+    subgraph Microservices [Application Logic Tier]
+        APIGW --> AuthSvc[Authentication Service]
+        APIGW --> TenantSvc[Tenant and Config Service<br/>Branding, Form Schemas, SLA, Rules]
+        APIGW --> TicketSvc[Ticket Management Service]
+        APIGW --> KBSvc[Knowledge Base Service]
+        APIGW --> NotifSvc[Notification Service]
+        WSGW --> ChatSvc[Real-time Live Chat Service]
+    end
+
+    ChatSvc -->|Create ticket from chat<br/>idempotency key = chat session| TicketSvc
+
+    %% Asynchronous Processing
+    subgraph Async_Layer [Event & Message Broker]
+        TicketSvc -->|ticket.status_changed<br/>ticket.created| MessageQueue[RabbitMQ / AWS SQS]
+        MessageQueue --> EmailWorker[Notification Worker<br/>Status-change Emails]
+        MessageQueue --> FanoutWorker[Realtime Fan-out Worker]
+    end
+
+    EmailWorker --> NotifSvc
+    FanoutWorker -->|Push events and email delivery status| WSGW
+
+    %% Cache & Storage Tier
+    subgraph Database_Layer [Data & Storage Tier]
+        AuthSvc --> DB[(Relational DB / PostgreSQL)]
+        TenantSvc --> DB
+        TicketSvc --> DB
+        KBSvc --> DB
+        ChatSvc --> DB
+
+        %% Caching
+        TicketSvc --> Cache[(In-Memory Cache / Redis)]
+        ChatSvc --> Cache
+        WSGW --> Cache
+
+        %% Search
+        KBSvc --> SearchIdx[(Search Index / OpenSearch)]
+
+        %% Unstructured Data
+        TicketSvc --> ObjStorage[(Object Storage / S3 Attachments)]
+    end
+
+    %% Direct uploads and search from client
+    ApiClient -.->|Pre-signed direct upload| ObjStorage
+    ApiClient -.->|KB search queries| KBSvc
+
+    %% Third-Party Integrations
+    subgraph Third_Party [External SaaS Integrations]
+        NotifSvc --> EmailSvc[SendGrid / Twilio SMS]
+        EmailSvc -->|Automated status email| BizEmail[Customer Dedicated Business Email<br/>Verified Address]
+        AuthSvc --> IdP[Tenant SSO / Auth0<br/>OIDC, SAML, MFA]
+        TicketSvc --> CRM[Salesforce / Jira Sync]
+        Obs --> Sentry[Error and RUM Vendor<br/>Sentry / Datadog]
+    end
+
+    AuthPkg <-->|OIDC Auth Code + PKCE| IdP
 ```
 
 ### 3.1 Why four apps and not one
