@@ -453,6 +453,49 @@ Three-pane workspace: **Queue / views** → **Conversation + ticket thread** →
 - Confirmation for high-risk actions (merge, delete, bulk close).
 - Sensitive data masking (e.g. card numbers) with reveal-on-demand, audited server-side.
 
+### 13.5 Creating a ticket from a live chat
+
+An agent can raise a ticket at any point during (or after) a live chat, without retyping anything.
+
+**Entry points**
+- A persistent **"Create ticket"** button in the chat panel header, plus a keyboard shortcut and a command-palette action.
+- A **"Convert to ticket"** option on a single message or selection (start the ticket from the problem statement).
+- **Automatic prompts:** when a chat ends unresolved, or a visitor leaves/an agent is unavailable (missed chat), the desk offers one-click ticket creation; tenants can configure auto-creation in the admin console.
+
+**What the form does**
+- Opens as a side drawer so the chat stays visible.
+- **Prefilled:** requester, organization, tenant, subject (suggested from the first customer message), description (summary or transcript excerpt), category, priority, plus page URL and context passed by the widget (plan, current page).
+- Full transcript is attached as a read-only linked conversation, not pasted text.
+- Agent can set assignee (default: self), status, tags and internal notes before saving.
+
+**Linking behavior**
+- The chat shows a **ticket reference chip** (e.g. `#12345`) once created; the ticket shows a "Created from chat" badge with a link back to the transcript.
+- Later chat messages on the same session keep syncing to the ticket thread (a single conversation, not two copies).
+- If a ticket already exists for this chat, the button changes to "Open ticket #12345", which prevents duplicates.
+- Creation sends an **idempotency key** tied to the chat session ID, so double clicks or retries can't create two tickets.
+
+**Customer side**
+- The customer sees a message in the chat or widget such as "We've opened ticket #12345 for you" with a link to the portal, and the same reference arrives by email (see 15.9).
+- If the customer is anonymous, the ticket creation step prompts for an email (or uses the identified widget JWT) so updates have somewhere to go.
+
+```mermaid
+sequenceDiagram
+    participant C as Customer (Widget/Portal)
+    participant D as Agent Desk
+    participant API as API
+    participant WS as Realtime
+
+    C->>D: Live chat in progress
+    D->>D: Agent clicks "Create ticket"
+    D->>D: Drawer opens, prefilled from chat + context
+    D->>API: POST /tickets (idempotency key = chatSessionId, chatId link)
+    API-->>D: Ticket #12345
+    API-->>WS: ticket.created + chat.linked
+    WS-->>C: "Ticket #12345 created" (chat shows reference)
+    WS-->>D: Chat panel shows ticket chip
+    Note over API: Backend sends the notification email (see 15.9)
+```
+
 ---
 
 ## 14. Admin Console
@@ -526,6 +569,40 @@ Three-pane workspace: **Queue / views** → **Conversation + ticket thread** →
 ### 15.8 Feature flags and entitlements
 
 - Flags for rollout (percentage, tenant, role); entitlements for plan-based features (e.g. chat only on enterprise plan). Both evaluated through the `tenant` package; UI hides, backend enforces.
+
+### 15.9 Notifications and status-change emails
+
+**Requirement:** when a ticket's status changes, an automated email goes to the customer organization's dedicated business email address.
+
+**Ownership of responsibility**
+- The **email is sent by the backend** (Notification Service), triggered by the `ticket.status_changed` event. The client never sends the email, because it must fire no matter who changed the status (agent, automation, API, SLA rule) and even if no browser is open.
+- The client's job is to **configure it, show it, and make it trustworthy.**
+
+**Client responsibilities**
+
+| Where | What the client provides |
+|---|---|
+| **Portal: org settings (org admin)** | Set one or more **dedicated business email addresses** for the organization (e.g. `support@acme.com`), choose which status changes trigger an email, and send a test email. |
+| **Verification** | A new address starts as "Pending"; the admin must click the confirmation link sent to it before it receives notifications. The UI shows Verified / Pending / Bounced states. |
+| **Admin console (internal)** | Per-tenant templates (branded, localized, with variables like `{{ticket.id}}`, `{{old_status}}`, `{{new_status}}`, `{{portal_link}}`), default triggers, sender identity/domain status (SPF/DKIM), and template preview before publish. |
+| **Agent desk** | Status change dialog shows **"A notification email will be sent to acme@..."** with an option to suppress or add a note when policy allows. Ticket timeline shows each email as an event (Sent / Delivered / Bounced / Failed). |
+| **Portal ticket view** | Notification history for the ticket, and a link in every email that deep-links to the ticket (auth required). |
+| **User preferences** | Individual users can set their own notification channels (email, in-app); org-level business address rules are separate from personal preferences. |
+
+**Email content (template contract)**
+- Subject: `[#12345] Status changed: In Progress → Resolved`.
+- Body: ticket title, old and new status, who or what changed it (agent name or "Automation"), latest public reply (if any), link to the portal.
+- Internal notes and agent-only data are **never** included.
+- Localized to the organization's language; plain-text and HTML versions.
+
+**Failure and trust behavior**
+- Bounce/failure → visible warning to the org admin in the portal and an internal alert in the admin console.
+- Dedupe: rapid consecutive status changes can be **batched within a short window** (configurable) to avoid email floods.
+- Every email send is auditable (timestamp, recipient, template version).
+
+**Related notification surfaces (same pipeline)**
+- In-app notifications and unread badges via the realtime channel.
+- Optional webhooks and SMS where entitled by the tenant plan.
 
 ---
 
@@ -638,6 +715,9 @@ Phases 3 and 4 can overlap if a second squad is available. The widget depends on
 6. Data residency requirements that affect client endpoints/regions?
 7. Is a native mobile app planned (which would favor a shared API client and push notifications)?
 8. Which analytics/RUM vendors are already approved?
+9. Is the "dedicated business email" one address per organization, or can an org have several (e.g. per department or per ticket category)?
+10. Should every status change trigger an email, or only selected ones (e.g. Resolved, Closed)? Should agents be able to suppress an email?
+11. Should tickets be created automatically when a chat ends unresolved, or always by an agent's decision?
 
 ---
 
