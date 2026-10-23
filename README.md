@@ -84,22 +84,22 @@ graph TD
     Agent["Support Agent"]
     Admin["Internal Admin"]
     Edge["Cloudflare free plan<br/>DNS, HTTPS, CDN, basic firewall"]
-
+ 
     Customer --> Edge
     OrgAdmin --> Edge
     Agent --> Edge
     Admin --> Edge
-
+ 
     subgraph Frontend ["Client Applications - Monorepo Apps"]
         Portal["Customer Portal - Next.js<br/>Help Center, Tickets, Live Chat, Org Settings"]
         Desk["Agent Desk - React SPA<br/>Queue, Ticket Workspace, Chat Panel, Create Ticket from Chat, Accept or Reject, Meet Sessions"]
         AdminApp["Admin Console - React SPA<br/>Tenants, SLA, Routing, Forms, Email Templates, Audit"]
     end
-
+ 
     Edge -->|Serves the apps| Portal
     Edge -->|Serves the apps| Desk
     Edge -->|Serves the apps| AdminApp
-
+ 
     subgraph SharedPkgs ["Shared Client Packages"]
         UIKit["ui - Design System and Tokens"]
         TenantPkg["tenant - Resolution, Theming, Entitlements"]
@@ -110,26 +110,26 @@ graph TD
         Obs["observability - Errors, Web Vitals, Trace IDs"]
         Flags["feature flags client"]
     end
-
+ 
     Portal --> SharedPkgs
     Desk --> SharedPkgs
     AdminApp --> SharedPkgs
-
+ 
     subgraph ClientState ["Client State and Storage"]
         QueryCache["TanStack Query Cache<br/>Tenant and Org Scoped Keys"]
         UIState["UI State<br/>Zustand + URL Params"]
         IDB[("IndexedDB<br/>Drafts, Chat Outbox")]
         TokenMem["In-Memory Access Token"]
     end
-
+ 
     ApiClient --> QueryCache
     RealtimeClient -->|Patch or invalidate| QueryCache
     RealtimeClient --> IDB
     AuthPkg --> TokenMem
     SharedPkgs --> UIState
-
+ 
     S3[("Amazon S3<br/>attachments and backups")]
-
+ 
     subgraph Server ["One AWS Server - Lightsail - Mumbai region"]
         Api["Backend API and Realtime Gateway<br/>login, tenants, tickets, chat, knowledge base, routing, notifications"]
         Jobs["Background Jobs<br/>auto-assign, accept or reject timeouts, emails"]
@@ -139,7 +139,7 @@ graph TD
         Jobs --> PG
         Jobs -->|Push events| Api
     end
-
+ 
     ApiClient -.->|HTTPS REST via Edge| Api
     RealtimeClient -.->|WSS or SSE via Edge| Api
     ApiClient -.->|Pre-signed direct upload| S3
